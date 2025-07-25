@@ -1,0 +1,170 @@
+{
+  "name": "Duplicate File Detector - Advanced",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "duplicate-scan",
+        "options": {}
+      },
+      "id": "webhook-trigger",
+      "name": "Webhook Trigger",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1.1,
+      "position": [240, 300],
+      "webhookId": "duplicate-detector"
+    },
+    {
+      "parameters": {
+        "operation": "list",
+        "folderId": "={{ $json.folderId || $env.ORGANIZATION_ROOT_FOLDER_ID }}",
+        "options": {
+          "fields": "files(id,name,mimeType,size,createdTime,modifiedTime,md5Checksum,parents)",
+          "recursive": true
+        }
+      },
+      "id": "scan-files",
+      "name": "Scan All Files",
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [460, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "const items = $input.all();\nconst duplicateGroups = new Map();\nconst results = {\n  totalFiles: items.length,\n  duplicateGroups: [],\n  uniqueFiles: [],\n  duplicateFiles: [],\n  spaceWasted: 0,\n  recommendations: []\n};\n\nfor (const item of items) {\n  const file = item.json;\n  const hashKey = file.md5Checksum || `${file.name}_${file.size}`;\n  \n  if (!duplicateGroups.has(hashKey)) {\n    duplicateGroups.set(hashKey, []);\n  }\n  \n  duplicateGroups.get(hashKey).push({\n    ...file,\n    hashKey,\n    sizeInMB: Math.round(file.size / 1024 / 1024 * 100) / 100\n  });\n}\n\nfor (const [hashKey, files] of duplicateGroups) {\n  if (files.length > 1) {\n    const sortedFiles = files.sort((a, b) => new Date(a.createdTime) - new Date(b.createdTime));\n    const original = sortedFiles[0];\n    const duplicates = sortedFiles.slice(1);\n    \n    const groupInfo = {\n      hashKey,\n      original,\n      duplicates,\n      count: files.length,\n      wastedSpace: duplicates.reduce((sum, file) => sum + file.size, 0),\n      wastedSpaceMB: Math.round(duplicates.reduce((sum, file) => sum + file.size, 0) / 1024 / 1024 * 100) / 100\n    };\n    \n    results.duplicateGroups.push(groupInfo);\n    results.duplicateFiles.push(...duplicates);\n    results.spaceWasted += groupInfo.wastedSpace;\n  } else {\n    results.uniqueFiles.push(files[0]);\n  }\n}\n\nresults.spaceWastedMB = Math.round(results.spaceWasted / 1024 / 1024 * 100) / 100;\nresults.duplicateCount = results.duplicateFiles.length;\nresults.duplicateGroupCount = results.duplicateGroups.length;\nresults.scanTimestamp = new Date().toISOString();\n\nreturn [{ json: results }];"
+      },
+      "id": "analyze-duplicates",
+      "name": "Analyze Duplicates",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [680, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "has-duplicates",
+              "leftValue": "={{ $json.duplicateCount }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "check-duplicates",
+      "name": "Check if Duplicates Found",
+      "type": "n8n-nodes-base.filter",
+      "typeVersion": 2,
+      "position": [900, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "const analysis = $input.first().json;\nconst duplicateFiles = [];\n\nfor (const group of analysis.duplicateGroups) {\n  for (const duplicate of group.duplicates) {\n    duplicateFiles.push({\n      ...duplicate,\n      originalFileId: group.original.id,\n      originalFileName: group.original.name,\n      groupHashKey: group.hashKey,\n      action: 'move_to_duplicates_folder'\n    });\n  }\n}\n\nreturn duplicateFiles.map(file => ({ json: file }));"
+      },
+      "id": "prepare-duplicates",
+      "name": "Prepare Duplicate Files",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1120, 300]
+    },
+    {
+      "parameters": {
+        "operation": "move",
+        "fileId": "={{ $json.id }}",
+        "folderId": "={{ $env.BACKUP_FOLDER_ID }}"
+      },
+      "id": "move-duplicates",
+      "name": "Move Duplicates to Backup",
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [1340, 300]
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Webhook Trigger": {
+      "main": [
+        [
+          {
+            "node": "Scan All Files",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Scan All Files": {
+      "main": [
+        [
+          {
+            "node": "Analyze Duplicates",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Analyze Duplicates": {
+      "main": [
+        [
+          {
+            "node": "Check if Duplicates Found",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check if Duplicates Found": {
+      "main": [
+        [
+          {
+            "node": "Prepare Duplicate Files",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Duplicate Files": {
+      "main": [
+        [
+          {
+            "node": "Move Duplicates to Backup",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "1",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "duplicate-detector"
+  },
+  "id": "duplicate-detector",
+  "tags": [
+    {
+      "createdAt": "2024-01-01T00:00:00.000Z",
+      "updatedAt": "2024-01-01T00:00:00.000Z",
+      "id": "duplicate-detection",
+      "name": "Duplicate Detection"
+    }
+  ]
+}

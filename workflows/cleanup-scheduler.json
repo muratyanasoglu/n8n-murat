@@ -1,0 +1,334 @@
+{
+  "name": "Cleanup Scheduler - 5S Maintenance",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "cronExpression": "0 2 * * *"
+            }
+          ]
+        }
+      },
+      "id": "daily-schedule",
+      "name": "Daily Cleanup Schedule",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [240, 300]
+    },
+    {
+      "parameters": {
+        "operation": "list",
+        "folderId": "={{ $env.ORGANIZATION_ROOT_FOLDER_ID }}",
+        "options": {
+          "fields": "files(id,name,mimeType,size,createdTime,modifiedTime,parents)",
+          "recursive": true
+        }
+      },
+      "id": "scan-all-files",
+      "name": "Scan All Files",
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [460, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "const items = $input.all();\nconst now = new Date();\nconst archiveDays = parseInt(process.env.ARCHIVE_OLD_FILES_DAYS || '365');\nconst archiveDate = new Date(now.getTime() - (archiveDays * 24 * 60 * 60 * 1000));\n\nconst results = {\n  oldFiles: [],\n  emptyFolders: [],\n  tempFiles: [],\n  largeFiles: [],\n  totalFiles: items.length,\n  cleanupActions: []\n};\n\nfor (const item of items) {\n  const file = item.json;\n  const modifiedDate = new Date(file.modifiedTime);\n  const fileName = file.name.toLowerCase();\n  const fileSizeMB = file.size / (1024 * 1024);\n  \n  // Eski dosyaları tespit et\n  if (modifiedDate < archiveDate) {\n    results.oldFiles.push({\n      ...file,\n      daysSinceModified: Math.floor((now - modifiedDate) / (24 * 60 * 60 * 1000)),\n      action: 'archive'\n    });\n  }\n  \n  // Geçici dosyaları tespit et\n  if (fileName.includes('temp') || fileName.includes('tmp') || \n      fileName.startsWith('~') || fileName.endsWith('.tmp')) {\n    results.tempFiles.push({\n      ...file,\n      action: 'delete'\n    });\n  }\n  \n  // Büyük dosyaları tespit et (100MB+)\n  if (fileSizeMB > 100) {\n    results.largeFiles.push({\n      ...file,\n      sizeMB: Math.round(fileSizeMB * 100) / 100,\n      action: 'review'\n    });\n  }\n  \n  // Klasör ise ve boş ise\n  if (file.mimeType === 'application/vnd.google-apps.folder' && file.size === 0) {\n    results.emptyFolders.push({\n      ...file,\n      action: 'delete'\n    });\n  }\n}\n\n// Temizlik aksiyonlarını belirle\nif (results.oldFiles.length > 0) {\n  results.cleanupActions.push({\n    type: 'archive_old_files',\n    count: results.oldFiles.length,\n    description: `${results.oldFiles.length} eski dosya arşivlenecek`\n  });\n}\n\nif (results.tempFiles.length > 0) {\n  results.cleanupActions.push({\n    type: 'delete_temp_files',\n    count: results.tempFiles.length,\n    description: `${results.tempFiles.length} geçici dosya silinecek`\n  });\n}\n\nif (results.emptyFolders.length > 0) {\n  results.cleanupActions.push({\n    type: 'delete_empty_folders',\n    count: results.emptyFolders.length,\n    description: `${results.emptyFolders.length} boş klasör silinecek`\n  });\n}\n\nresults.cleanupTimestamp = now.toISOString();\nresults.needsCleanup = results.cleanupActions.length > 0;\n\nreturn [{ json: results }];"
+      },
+      "id": "analyze-cleanup",
+      "name": "Analyze Cleanup Needs",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [680, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "needs-cleanup",
+              "leftValue": "={{ $json.needsCleanup }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equal"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "check-cleanup-needed",
+      "name": "Check if Cleanup Needed",
+      "type": "n8n-nodes-base.filter",
+      "typeVersion": 2,
+      "position": [900, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "const analysis = $input.first().json;\nconst filesToProcess = [];\n\n// Eski dosyaları arşiv için hazırla\nfor (const file of analysis.oldFiles) {\n  filesToProcess.push({\n    ...file,\n    processType: 'archive'\n  });\n}\n\n// Geçici dosyaları silme için hazırla\nfor (const file of analysis.tempFiles) {\n  filesToProcess.push({\n    ...file,\n    processType: 'delete'\n  });\n}\n\n// Boş klasörleri silme için hazırla\nfor (const folder of analysis.emptyFolders) {\n  filesToProcess.push({\n    ...folder,\n    processType: 'delete'\n  });\n}\n\nreturn filesToProcess.map(file => ({ json: file }));"
+      },
+      "id": "prepare-cleanup",
+      "name": "Prepare Cleanup Items",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1120, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "archive-filter",
+              "leftValue": "={{ $json.processType }}",
+              "rightValue": "archive",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "filter-archive",
+      "name": "Filter Files to Archive",
+      "type": "n8n-nodes-base.filter",
+      "typeVersion": 2,
+      "position": [1340, 200]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "delete-filter",
+              "leftValue": "={{ $json.processType }}",
+              "rightValue": "delete",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "filter-delete",
+      "name": "Filter Files to Delete",
+      "type": "n8n-nodes-base.filter",
+      "typeVersion": 2,
+      "position": [1340, 400]
+    },
+    {
+      "parameters": {
+        "operation": "move",
+        "fileId": "={{ $json.id }}",
+        "folderId": "={{ $env.BACKUP_FOLDER_ID }}/archive"
+      },
+      "id": "archive-files",
+      "name": "Archive Old Files",
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [1560, 200]
+    },
+    {
+      "parameters": {
+        "operation": "delete",
+        "fileId": "={{ $json.id }}"
+      },
+      "id": "delete-files",
+      "name": "Delete Temp Files",
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [1560, 400]
+    },
+    {
+      "parameters": {
+        "jsCode": "const analysis = $node['Analyze Cleanup Needs'].json;\nconst archivedFiles = $node['Archive Old Files']?.json || [];\nconst deletedFiles = $node['Delete Temp Files']?.json || [];\n\nconst summary = {\n  cleanupCompleted: true,\n  timestamp: new Date().toISOString(),\n  statistics: {\n    totalFilesScanned: analysis.totalFiles,\n    filesArchived: Array.isArray(archivedFiles) ? archivedFiles.length : (archivedFiles ? 1 : 0),\n    filesDeleted: Array.isArray(deletedFiles) ? deletedFiles.length : (deletedFiles ? 1 : 0),\n    oldFilesFound: analysis.oldFiles.length,\n    tempFilesFound: analysis.tempFiles.length,\n    emptyFoldersFound: analysis.emptyFolders.length,\n    largeFilesFound: analysis.largeFiles.length\n  },\n  actions: analysis.cleanupActions,\n  nextCleanup: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),\n  status: 'maintenance_completed'\n};\n\nreturn [{ json: summary }];"
+      },
+      "id": "generate-cleanup-report",
+      "name": "Generate Cleanup Report",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1780, 300]
+    },
+    {
+      "parameters": {
+        "operation": "create",
+        "folderId": "={{ $env.ORGANIZATION_ROOT_FOLDER_ID }}",
+        "name": "Daily_Cleanup_Report_{{ $now.format('YYYY-MM-DD') }}.txt",
+        "options": {
+          "uploadData": "=5S Daily Maintenance Report\\n\\nDate: {{ $json.timestamp }}\\nStatus: {{ $json.status }}\\n\\nStatistics:\\n- Total Files Scanned: {{ $json.statistics.totalFilesScanned }}\\n- Files Archived: {{ $json.statistics.filesArchived }}\\n- Files Deleted: {{ $json.statistics.filesDeleted }}\\n- Old Files Found: {{ $json.statistics.oldFilesFound }}\\n- Temp Files Found: {{ $json.statistics.tempFilesFound }}\\n- Empty Folders Found: {{ $json.statistics.emptyFoldersFound }}\\n- Large Files Found: {{ $json.statistics.largeFilesFound }}\\n\\nActions Performed:\\n{{ $json.actions.map(action => `- ${action.description}`).join('\\n') }}\\n\\nNext Cleanup: {{ $json.nextCleanup }}\\n\\n5S Principle: Shitsuke (躾) - Sustain\\nMaintenance completed successfully."
+        }
+      },
+      "id": "create-cleanup-report",
+      "name": "Create Cleanup Report",
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [2000, 300]
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Daily Cleanup Schedule": {
+      "main": [
+        [
+          {
+            "node": "Scan All Files",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Scan All Files": {
+      "main": [
+        [
+          {
+            "node": "Analyze Cleanup Needs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Analyze Cleanup Needs": {
+      "main": [
+        [
+          {
+            "node": "Check if Cleanup Needed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check if Cleanup Needed": {
+      "main": [
+        [
+          {
+            "node": "Prepare Cleanup Items",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Cleanup Items": {
+      "main": [
+        [
+          {
+            "node": "Filter Files to Archive",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Filter Files to Delete",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Filter Files to Archive": {
+      "main": [
+        [
+          {
+            "node": "Archive Old Files",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Filter Files to Delete": {
+      "main": [
+        [
+          {
+            "node": "Delete Temp Files",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Archive Old Files": {
+      "main": [
+        [
+          {
+            "node": "Generate Cleanup Report",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Delete Temp Files": {
+      "main": [
+        [
+          {
+            "node": "Generate Cleanup Report",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generate Cleanup Report": {
+      "main": [
+        [
+          {
+            "node": "Create Cleanup Report",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "1",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "cleanup-scheduler"
+  },
+  "id": "cleanup-scheduler",
+  "tags": [
+    {
+      "createdAt": "2024-01-01T00:00:00.000Z",
+      "updatedAt": "2024-01-01T00:00:00.000Z",
+      "id": "shitsuke",
+      "name": "Shitsuke (Sustain)"
+    },
+    {
+      "createdAt": "2024-01-01T00:00:00.000Z",
+      "updatedAt": "2024-01-01T00:00:00.000Z",
+      "id": "maintenance",
+      "name": "Maintenance"
+    }
+  ]
+}

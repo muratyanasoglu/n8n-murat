@@ -1,0 +1,39 @@
+{
+  "name": "n8n-google-drive-5s-organizer",
+  "version": "1.0.0",
+  "description": "Professional n8n workflow for organizing Google Drive files using 5S methodology",
+  "main": "index.js",
+  "scripts": {
+    "setup": "chmod +x scripts/*.sh && ./scripts/setup.sh",
+    "start": "chmod +x scripts/start.sh && ./scripts/start.sh",
+    "stop": "chmod +x scripts/stop.sh && ./scripts/stop.sh",
+    "dev": "n8n start --tunnel",
+    "docker:up": "docker-compose up -d",
+    "docker:down": "docker-compose down",
+    "docker:logs": "docker-compose logs -f",
+    "import:workflows": "n8n import:workflow --input=./workflows/",
+    "export:workflows": "n8n export:workflow --output=./workflows/",
+    "generate:key": "openssl rand -hex 16",
+    "build": "echo 'No build step required for n8n'",
+    "test": "echo 'Tests will be added in future versions'"
+  },
+  "keywords": [
+    "n8n",
+    "google-drive",
+    "5s",
+    "automation",
+    "file-organization"
+  ],
+  "author": "Murat",
+  "license": "MIT",
+  "dependencies": {
+    "n8n": "^1.19.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0"
+  },
+  "engines": {
+    "node": ">=18.0.0",
+    "npm": ">=8.0.0"
+  }
+}

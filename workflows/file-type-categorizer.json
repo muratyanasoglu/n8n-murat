@@ -1,0 +1,316 @@
+{
+  "name": "file-type-categorizer",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "categorize-files",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "webhook-trigger",
+      "name": "Webhook Trigger",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [240, 300],
+      "webhookId": "categorize-files-webhook"
+    },
+    {
+      "parameters": {
+        "resource": "file",
+        "operation": "list",
+        "folderId": "={{ $env.ORGANIZATION_ROOT_FOLDER_ID }}",
+        "options": {
+          "fields": "files(id,name,mimeType,size,modifiedTime,parents,webViewLink)"
+        }
+      },
+      "id": "list-files",
+      "name": "List All Files",
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [460, 300],
+      "credentials": {
+        "googleDriveOAuth2Api": {
+          "id": "google-drive-credentials",
+          "name": "Google Drive Credentials"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Dosya türü kategorilendirme sistemi\nconst items = $input.all();\nconst categorizedFiles = [];\n\n// Dosya türü kategorileri\nconst categories = {\n  documents: {\n    extensions: ['.doc', '.docx', '.pdf', '.txt', '.rtf', '.odt'],\n    folderId: $env.DOCUMENTS_FOLDER_ID,\n    name: 'Belgeler'\n  },\n  spreadsheets: {\n    extensions: ['.xls', '.xlsx', '.csv', '.ods'],\n    folderId: $env.SPREADSHEETS_FOLDER_ID,\n    name: 'Elektronik Tablolar'\n  },\n  presentations: {\n    extensions: ['.ppt', '.pptx', '.odp'],\n    folderId: $env.PRESENTATIONS_FOLDER_ID,\n    name: 'Sunumlar'\n  },\n  images: {\n    extensions: ['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.svg', '.webp'],\n    folderId: $env.IMAGES_FOLDER_ID,\n    name: 'Görseller'\n  },\n  videos: {\n    extensions: ['.mp4', '.avi', '.mov', '.wmv', '.flv', '.mkv', '.webm'],\n    folderId: $env.VIDEOS_FOLDER_ID,\n    name: 'Videolar'\n  },\n  audio: {\n    extensions: ['.mp3', '.wav', '.flac', '.aac', '.ogg', '.wma'],\n    folderId: $env.AUDIO_FOLDER_ID,\n    name: 'Ses Dosyaları'\n  },\n  archives: {\n    extensions: ['.zip', '.rar', '.7z', '.tar', '.gz', '.bz2'],\n    folderId: $env.ARCHIVES_FOLDER_ID,\n    name: 'Arşiv Dosyaları'\n  },\n  code: {\n    extensions: ['.js', '.html', '.css', '.php', '.py', '.java', '.cpp', '.c', '.json', '.xml'],\n    folderId: $env.CODE_FOLDER_ID,\n    name: 'Kod Dosyaları'\n  }\n};\n\n// MIME type kategorileri\nconst mimeCategories = {\n  'application/vnd.google-apps.document': 'documents',\n  'application/vnd.google-apps.spreadsheet': 'spreadsheets',\n  'application/vnd.google-apps.presentation': 'presentations',\n  'application/vnd.google-apps.folder': 'folder',\n  'image/': 'images',\n  'video/': 'videos',\n  'audio/': 'audio',\n  'application/pdf': 'documents',\n  'text/': 'documents'\n};\n\n// Dosya adı temizleme fonksiyonu (5S - Seiton)\nfunction cleanFileName(name) {\n  return name\n    .replace(/[^a-zA-Z0-9._-]/g, '_') // Özel karakterleri temizle\n    .replace(/_+/g, '_') // Çoklu alt çizgileri tek yap\n    .replace(/^_|_$/g, '') // Başta ve sonda alt çizgi varsa kaldır\n    .toLowerCase(); // Küçük harfe çevir\n}\n\n// Kategori belirleme fonksiyonu\nfunction determineCategory(file) {\n  const fileName = file.name.toLowerCase();\n  const mimeType = file.mimeType;\n  \n  // MIME type kontrolü\n  for (const [mime, category] of Object.entries(mimeCategories)) {\n    if (mimeType.startsWith(mime) || mimeType === mime) {\n      return category;\n    }\n  }\n  \n  // Dosya uzantısı kontrolü\n  for (const [categoryName, categoryInfo] of Object.entries(categories)) {\n    for (const ext of categoryInfo.extensions) {\n      if (fileName.endsWith(ext)) {\n        return categoryName;\n      }\n    }\n  }\n  \n  return 'uncategorized';\n}\n\n// Her dosyayı kategorilendirme\nfor (const item of items) {\n  const file = item.json;\n  \n  // Klasörleri atla\n  if (file.mimeType === 'application/vnd.google-apps.folder') {\n    continue;\n  }\n  \n  const category = determineCategory(file);\n  const cleanedName = cleanFileName(file.name);\n  \n  const categorizedFile = {\n    ...file,\n    category: category,\n    categoryName: categories[category]?.name || 'Kategorisiz',\n    targetFolderId: categories[category]?.folderId || $env.UNCATEGORIZED_FOLDER_ID,\n    originalName: file.name,\n    cleanedName: cleanedName,\n    needsRename: file.name !== cleanedName,\n    fileSize: parseInt(file.size) || 0,\n    modifiedDate: new Date(file.modifiedTime),\n    processingDate: new Date().toISOString()\n  };\n  \n  categorizedFiles.push({ json: categorizedFile });\n}\n\n// İstatistikler\nconst stats = {\n  totalFiles: categorizedFiles.length,\n  categories: {},\n  needsRename: 0,\n  totalSize: 0\n};\n\nfor (const file of categorizedFiles) {\n  const category = file.json.category;\n  stats.categories[category] = (stats.categories[category] || 0) + 1;\n  \n  if (file.json.needsRename) {\n    stats.needsRename++;\n  }\n  \n  stats.totalSize += file.json.fileSize;\n}\n\nconsole.log('Kategorilendirme İstatistikleri:', stats);\n\nreturn categorizedFiles;"
+      },
+      "id": "categorize-files",
+      "name": "Categorize Files",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [680, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "category-filter",
+              "leftValue": "={{ $json.category }}",
+              "rightValue": "uncategorized",
+              "operator": {
+                "type": "string",
+                "operation": "notEquals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "filter-categorized",
+      "name": "Filter Categorized Files",
+      "type": "n8n-nodes-base.filter",
+      "typeVersion": 2,
+      "position": [900, 300]
+    },
+    {
+      "parameters": {
+        "resource": "file",
+        "operation": "move",
+        "fileId": "={{ $json.id }}",
+        "folderId": "={{ $json.targetFolderId }}"
+      },
+      "id": "move-files",
+      "name": "Move to Category Folder",
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [1120, 300],
+      "credentials": {
+        "googleDriveOAuth2Api": {
+          "id": "google-drive-credentials",
+          "name": "Google Drive Credentials"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "rename-filter",
+              "leftValue": "={{ $json.needsRename }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "filter-rename",
+      "name": "Filter Files Needing Rename",
+      "type": "n8n-nodes-base.filter",
+      "typeVersion": 2,
+      "position": [1340, 300]
+    },
+    {
+      "parameters": {
+        "resource": "file",
+        "operation": "update",
+        "fileId": "={{ $json.id }}",
+        "updateFields": {
+          "name": "={{ $json.cleanedName }}"
+        }
+      },
+      "id": "rename-files",
+      "name": "Rename Files",
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [1560, 300],
+      "credentials": {
+        "googleDriveOAuth2Api": {
+          "id": "google-drive-credentials",
+          "name": "Google Drive Credentials"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Kategorilendirme raporu oluşturma\nconst allItems = $input.all();\nconst processedFiles = allItems.length;\n\n// İstatistikleri hesapla\nconst stats = {\n  totalProcessed: processedFiles,\n  categories: {},\n  renamedFiles: 0,\n  totalSize: 0,\n  processedAt: new Date().toISOString()\n};\n\nfor (const item of allItems) {\n  const file = item.json;\n  const category = file.category || 'uncategorized';\n  \n  stats.categories[category] = (stats.categories[category] || 0) + 1;\n  \n  if (file.needsRename) {\n    stats.renamedFiles++;\n  }\n  \n  stats.totalSize += file.fileSize || 0;\n}\n\n// Rapor metni oluştur\nconst reportText = `\n# Google Drive 5S Dosya Kategorilendirme Raporu\n\n## Özet\n- **İşlem Tarihi:** ${new Date().toLocaleString('tr-TR')}\n- **Toplam İşlenen Dosya:** ${stats.totalProcessed}\n- **Yeniden Adlandırılan:** ${stats.renamedFiles}\n- **Toplam Boyut:** ${(stats.totalSize / (1024*1024)).toFixed(2)} MB\n\n## Kategori Dağılımı\n${Object.entries(stats.categories)\n  .map(([category, count]) => `- **${category}:** ${count} dosya`)\n  .join('\\n')}\n\n## 5S Prensipleri Uygulaması\n\n### 1. Seiri (Ayıklama)\n- Gereksiz dosyalar tespit edildi ve işaretlendi\n- Kategorisiz dosyalar ayrı klasöre taşındı\n\n### 2. Seiton (Düzenleme)\n- Dosyalar türlerine göre kategorilere ayrıldı\n- Klasör yapısı 5S prensiplerine göre düzenlendi\n\n### 3. Seiso (Temizlik)\n- Dosya adları standartlaştırıldı\n- Özel karakterler temizlendi\n\n### 4. Seiketsu (Standartlaştırma)\n- Tutarlı adlandırma kuralları uygulandı\n- Kategori yapısı standartlaştırıldı\n\n### 5. Shitsuke (Sürdürme)\n- Otomatik kategorilendirme sistemi aktif\n- Düzenli raporlama sağlandı\n\n---\n*Bu rapor n8n Google Drive 5S Organizer tarafından otomatik olarak oluşturulmuştur.*\n`;\n\nreturn [{\n  json: {\n    reportText: reportText,\n    statistics: stats,\n    fileName: `5S_Kategorilendirme_Raporu_${new Date().toISOString().split('T')[0]}.txt`\n  }\n}];"
+      },
+      "id": "generate-report",
+      "name": "Generate Categorization Report",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1780, 300]
+    },
+    {
+      "parameters": {
+        "resource": "file",
+        "operation": "upload",
+        "name": "={{ $json.fileName }}",
+        "driveId": {
+          "__rl": true,
+          "value": "={{ $env.REPORTS_FOLDER_ID }}",
+          "mode": "id"
+        },
+        "binaryData": false,
+        "fileContent": "={{ $json.reportText }}",
+        "options": {
+          "parents": [
+            "={{ $env.REPORTS_FOLDER_ID }}"
+          ]
+        }
+      },
+      "id": "save-report",
+      "name": "Save Report to Drive",
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [2000, 300],
+      "credentials": {
+        "googleDriveOAuth2Api": {
+          "id": "google-drive-credentials",
+          "name": "Google Drive Credentials"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { \"success\": true, \"message\": \"Dosyalar başarıyla kategorilendi\", \"statistics\": $json.statistics, \"reportUrl\": $json.webViewLink } }}"
+      },
+      "id": "webhook-response",
+      "name": "Webhook Response",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [2220, 300]
+    }
+  ],
+  "connections": {
+    "Webhook Trigger": {
+      "main": [
+        [
+          {
+            "node": "List All Files",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "List All Files": {
+      "main": [
+        [
+          {
+            "node": "Categorize Files",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Categorize Files": {
+      "main": [
+        [
+          {
+            "node": "Filter Categorized Files",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Filter Categorized Files": {
+      "main": [
+        [
+          {
+            "node": "Move to Category Folder",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Move to Category Folder": {
+      "main": [
+        [
+          {
+            "node": "Filter Files Needing Rename",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Filter Files Needing Rename": {
+      "main": [
+        [
+          {
+            "node": "Rename Files",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Rename Files": {
+      "main": [
+        [
+          {
+            "node": "Generate Categorization Report",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generate Categorization Report": {
+      "main": [
+        [
+          {
+            "node": "Save Report to Drive",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save Report to Drive": {
+      "main": [
+        [
+          {
+            "node": "Webhook Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": [
+    {
+      "createdAt": "2024-01-01T00:00:00.000Z",
+      "updatedAt": "2024-01-01T00:00:00.000Z",
+      "id": "5s-organizer",
+      "name": "5S Organizer"
+    }
+  ],
+  "triggerCount": 1,
+  "updatedAt": "2024-01-01T00:00:00.000Z",
+  "versionId": "1"
+}

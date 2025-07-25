@@ -1,0 +1,439 @@
+{
+  "name": "Google Drive 5S Organizer - Main Workflow",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 6
+            }
+          ]
+        }
+      },
+      "id": "schedule-trigger",
+      "name": "Schedule Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        240,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "list",
+        "folderId": "={{ $env.ORGANIZATION_ROOT_FOLDER_ID }}",
+        "options": {
+          "fields": "files(id,name,mimeType,size,createdTime,modifiedTime,parents)",
+          "recursive": true
+        }
+      },
+      "id": "google-drive-list",
+      "name": "List Drive Files",
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [
+        460,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "seiri-condition",
+              "leftValue": "={{ $json.size }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "seiri-filter",
+      "name": "Seiri - Filter Valid Files",
+      "type": "n8n-nodes-base.filter",
+      "typeVersion": 2,
+      "position": [
+        680,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// 5S Seiton - Dosya Kategorilendirme\nconst items = $input.all();\nconst categorizedFiles = [];\n\n// Dosya uzantısı kategorileri\nconst categories = {\n  documents: (process.env.DOCUMENT_EXTENSIONS || 'pdf,doc,docx,txt,rtf').split(','),\n  spreadsheets: (process.env.SPREADSHEET_EXTENSIONS || 'xls,xlsx,csv,ods').split(','),\n  presentations: (process.env.PRESENTATION_EXTENSIONS || 'ppt,pptx,odp').split(','),\n  images: (process.env.IMAGE_EXTENSIONS || 'jpg,jpeg,png,gif,bmp,svg,webp').split(','),\n  videos: (process.env.VIDEO_EXTENSIONS || 'mp4,avi,mov,wmv,flv,mkv').split(','),\n  audio: (process.env.AUDIO_EXTENSIONS || 'mp3,wav,flac,aac,ogg').split(','),\n  archives: (process.env.ARCHIVE_EXTENSIONS || 'zip,rar,7z,tar,gz').split(',')\n};\n\n// Klasör ID'leri\nconst folderIds = {\n  documents: '1ABC123_DOCUMENTS_FOLDER_ID',\n  spreadsheets: '1ABC123_SPREADSHEETS_FOLDER_ID',\n  presentations: '1ABC123_PRESENTATIONS_FOLDER_ID',\n  images: '1ABC123_IMAGES_FOLDER_ID',\n  videos: '1ABC123_VIDEOS_FOLDER_ID',\n  audio: '1ABC123_AUDIO_FOLDER_ID',\n  archives: '1ABC123_ARCHIVES_FOLDER_ID',\n  others: '1ABC123_OTHERS_FOLDER_ID'\n};\n\nfor (const item of items) {\n  const fileName = item.json.name;\n  const fileExtension = fileName.split('.').pop().toLowerCase();\n  \n  let category = 'others';\n  let targetFolderId = folderIds.others;\n  \n  // Kategori belirleme\n  for (const [cat, extensions] of Object.entries(categories)) {\n    if (extensions.includes(fileExtension)) {\n      category = cat;\n      targetFolderId = folderIds[cat];\n      break;\n    }\n  }\n  \n  // Dosya adını temizle (Seiketsu - Standartlaştırma)\n  const cleanFileName = fileName\n    .replace(/[^a-zA-Z0-9._-]/g, '_') // Özel karakterleri temizle\n    .replace(/_+/g, '_') // Çoklu alt çizgileri tek yap\n    .replace(/^_|_$/g, ''); // Başta ve sonda alt çizgi varsa sil\n  \n  categorizedFiles.push({\n    ...item.json,\n    category,\n    targetFolderId,\n    cleanFileName,\n    needsRename: fileName !== cleanFileName,\n    originalName: fileName\n  });\n}\n\nreturn categorizedFiles.map(file => ({ json: file }));"
+      },
+      "id": "seiton-categorize",
+      "name": "Seiton - Categorize Files",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        900,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Seiso - Duplicate Dosya Tespiti\nconst items = $input.all();\nconst duplicates = [];\nconst unique = [];\nconst fileMap = new Map();\n\nfor (const item of items) {\n  const file = item.json;\n  const key = `${file.name}_${file.size}`;\n  \n  if (fileMap.has(key)) {\n    // Duplicate bulundu\n    const existing = fileMap.get(key);\n    duplicates.push({\n      ...file,\n      isDuplicate: true,\n      duplicateOf: existing.id,\n      action: 'move_to_duplicates'\n    });\n  } else {\n    // Benzersiz dosya\n    fileMap.set(key, file);\n    unique.push({\n      ...file,\n      isDuplicate: false\n    });\n  }\n}\n\n// Hem unique hem duplicate dosyaları döndür\nconst allFiles = [...unique, ...duplicates];\nreturn allFiles.map(file => ({ json: file }));"
+      },
+      "id": "seiso-duplicates",
+      "name": "Seiso - Detect Duplicates",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1120,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "duplicate-condition",
+              "leftValue": "={{ $json.isDuplicate }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equal"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "duplicate-filter",
+      "name": "Filter Duplicates",
+      "type": "n8n-nodes-base.filter",
+      "typeVersion": 2,
+      "position": [
+        1340,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "unique-condition",
+              "leftValue": "={{ $json.isDuplicate }}",
+              "rightValue": false,
+              "operator": {
+                "type": "boolean",
+                "operation": "equal"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "unique-filter",
+      "name": "Filter Unique Files",
+      "type": "n8n-nodes-base.filter",
+      "typeVersion": 2,
+      "position": [
+        1340,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "move",
+        "fileId": "={{ $json.id }}",
+        "folderId": "={{ $env.BACKUP_FOLDER_ID }}/duplicates"
+      },
+      "id": "move-duplicates",
+      "name": "Move Duplicates",
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [
+        1560,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "move",
+        "fileId": "={{ $json.id }}",
+        "folderId": "={{ $json.targetFolderId }}"
+      },
+      "id": "move-files",
+      "name": "Move Files to Categories",
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [
+        1560,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "rename-condition",
+              "leftValue": "={{ $json.needsRename }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equal"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "rename-filter",
+      "name": "Filter Files to Rename",
+      "type": "n8n-nodes-base.filter",
+      "typeVersion": 2,
+      "position": [
+        1780,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "fileId": "={{ $json.id }}",
+        "updateFields": {
+          "name": "={{ $json.cleanFileName }}"
+        }
+      },
+      "id": "rename-files",
+      "name": "Seiketsu - Rename Files",
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [
+        2000,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Shitsuke - Rapor Oluşturma\nconst allItems = $input.all();\nconst summary = {\n  totalFiles: allItems.length,\n  categorized: 0,\n  duplicatesFound: 0,\n  filesRenamed: 0,\n  categories: {},\n  timestamp: new Date().toISOString(),\n  organizationComplete: true\n};\n\nfor (const item of allItems) {\n  const file = item.json;\n  \n  if (file.category) {\n    summary.categorized++;\n    summary.categories[file.category] = (summary.categories[file.category] || 0) + 1;\n  }\n  \n  if (file.isDuplicate) {\n    summary.duplicatesFound++;\n  }\n  \n  if (file.needsRename) {\n    summary.filesRenamed++;\n  }\n}\n\nreturn [{ json: summary }];"
+      },
+      "id": "shitsuke-report",
+      "name": "Shitsuke - Generate Report",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2220,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "create",
+        "folderId": "={{ $env.ORGANIZATION_ROOT_FOLDER_ID }}",
+        "name": "5S_Organization_Report_{{ $now.format('YYYY-MM-DD_HH-mm') }}.txt",
+        "options": {
+          "uploadData": "=5S Google Drive Organization Report\\n\\nTimestamp: {{ $json.timestamp }}\\nTotal Files Processed: {{ $json.totalFiles }}\\nFiles Categorized: {{ $json.categorized }}\\nDuplicates Found: {{ $json.duplicatesFound }}\\nFiles Renamed: {{ $json.filesRenamed }}\\n\\nCategory Breakdown:\\n{{ Object.entries($json.categories).map(([cat, count]) => `${cat}: ${count} files`).join('\\n') }}\\n\\nOrganization Status: {{ $json.organizationComplete ? 'COMPLETED' : 'PARTIAL' }}\\n\\n5S Principles Applied:\\n✅ Seiri (整理) - Unnecessary files filtered\\n✅ Seiton (整頓) - Files categorized by type\\n✅ Seiso (清掃) - Duplicates detected and moved\\n✅ Seiketsu (清潔) - File names standardized\\n✅ Shitsuke (躾) - Process documented and reported"
+        }
+      },
+      "id": "create-report",
+      "name": "Create Report File",
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [
+        2440,
+        300
+      ]
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Schedule Trigger": {
+      "main": [
+        [
+          {
+            "node": "List Drive Files",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "List Drive Files": {
+      "main": [
+        [
+          {
+            "node": "Seiri - Filter Valid Files",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Seiri - Filter Valid Files": {
+      "main": [
+        [
+          {
+            "node": "Seiton - Categorize Files",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Seiton - Categorize Files": {
+      "main": [
+        [
+          {
+            "node": "Seiso - Detect Duplicates",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Seiso - Detect Duplicates": {
+      "main": [
+        [
+          {
+            "node": "Filter Duplicates",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Filter Unique Files",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Filter Duplicates": {
+      "main": [
+        [
+          {
+            "node": "Move Duplicates",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Filter Unique Files": {
+      "main": [
+        [
+          {
+            "node": "Move Files to Categories",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Move Files to Categories": {
+      "main": [
+        [
+          {
+            "node": "Filter Files to Rename",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Filter Files to Rename": {
+      "main": [
+        [
+          {
+            "node": "Seiketsu - Rename Files",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Seiketsu - Rename Files": {
+      "main": [
+        [
+          {
+            "node": "Shitsuke - Generate Report",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Move Duplicates": {
+      "main": [
+        [
+          {
+            "node": "Shitsuke - Generate Report",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Shitsuke - Generate Report": {
+      "main": [
+        [
+          {
+            "node": "Create Report File",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "1",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "google-drive-5s-organizer"
+  },
+  "id": "main-organizer",
+  "tags": [
+    {
+      "createdAt": "2024-01-01T00:00:00.000Z",
+      "updatedAt": "2024-01-01T00:00:00.000Z",
+      "id": "5s-methodology",
+      "name": "5S Methodology"
+    },
+    {
+      "createdAt": "2024-01-01T00:00:00.000Z",
+      "updatedAt": "2024-01-01T00:00:00.000Z",
+      "id": "google-drive",
+      "name": "Google Drive"
+    }
+  ]
+}
